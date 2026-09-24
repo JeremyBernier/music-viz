@@ -41,15 +41,16 @@ kbd {
 
 .toolbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap; /* always one row: narrower windows get more compact instead (see media queries) */
   align-items: center;
-  gap: 10px 14px;
+  gap: 14px;
   padding: 10px 14px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
 }
 
 .brand {
+  white-space: nowrap;
   font-weight: 700;
   letter-spacing: 0.2px;
   font-size: 14px;
@@ -269,7 +270,35 @@ input[type='range'] {
   margin-left: auto;
 }
 
+@media (max-width: 1440px) {
+  .btn.ghost:not(#orientation) .label {
+    display: none;
+  }
+}
+
+@media (max-width: 1280px) {
+  .brand,
+  .field > span {
+    display: none;
+  }
+}
+
+@media (max-width: 1024px) {
+  #orientation .label {
+    display: none;
+  }
+}
+
 @media (max-width: 900px) {
+  .toolbar {
+    gap: 8px;
+  }
+  select {
+    max-width: 130px;
+  }
+  .meter {
+    width: 50px;
+  }
   .btn .label {
     display: none;
   }
@@ -279,4 +308,51 @@ input[type='range'] {
   .statusbar .hints {
     display: none;
   }
+}
+
+@media (max-width: 760px) {
+  .toolbar .group.playback,
+  .meter {
+    display: none;
+  }
+}
+
+@media (max-width: 600px) {
+  .toolbar {
+    padding: 8px 10px;
+    gap: 6px;
+  }
+  .group {
+    gap: 6px;
+  }
+  .btn {
+    padding: 0 9px;
+  }
+  .clock {
+    display: none;
+  }
+  select {
+    max-width: 96px;
+  }
+  /* Icon only (dot = record, square = stop); label stays available to screen readers. */
+  .btn.record .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+}
+
+/* Last resort for keeping the toolbar on one row: dropdowns shrink, buttons don't. */
+.toolbar .group,
+.toolbar .field,
+.toolbar select {
+  min-width: 0;
+}
+.toolbar .btn,
+.toolbar .clock,
+.toolbar .brand,
+.toolbar .meter {
+  flex-shrink: 0;
 }

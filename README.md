@@ -12,6 +12,9 @@ npm run dev      # http://localhost:5173
 
 - **Record** (or press `R`): notes appear about half a second after you play them.
   When you stop, the whole take is decoded one more time so the final result is consistent.
+  While recording, the keyboard presses down the notes that are currently sounding.
+- **Vertical** (or press `V`): rotates the roll so the keyboard sits along the top and time
+  flows downward. Click again to go back to horizontal. The choice is remembered.
 - **Play** (or press `Space`): plays back the detected notes, the original recording, or both.
 - **Detection** panel: note sensitivity, sustain sensitivity, minimum note length. Changes
   re-apply instantly to the current take.

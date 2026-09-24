@@ -14,7 +14,7 @@
         <button id="record" class="btn record" title="Record (R)" disabled>
           <span class="dot"></span><span class="label">Record</span>
         </button>
-        <button id="play" class="btn" title="Play / pause (Space)" disabled>
+        <button id="play" class="btn" aria-label="Play" title="Play / pause (Space)" disabled>
           <svg viewBox="0 0 16 16" width="14" height="14"><path d="M4 2.5v11l9-5.5z" fill="currentColor" /></svg>
           <span class="label">Play</span>
         </button>
@@ -29,7 +29,7 @@
         <div class="meter" title="Input level"><div id="level"></div></div>
       </div>
 
-      <div class="group">
+      <div class="group playback">
         <label class="field">
           <span>Playback</span>
           <select id="playMode">
@@ -41,20 +41,20 @@
       </div>
 
       <div class="group right">
-        <button id="orientation" class="btn ghost" title="Vertical mode: keys on top (V)" aria-pressed="false">
+        <button id="orientation" class="btn ghost" aria-label="Vertical mode" title="Vertical mode: keys on top (V)" aria-pressed="false">
           <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 0 1 6.36 5.15l1.06-1.06.7.7L14 8.41l-2.12-2.12.7-.7 1.13 1.12A5.5 5.5 0 1 0 8 13.5v1A6.5 6.5 0 0 1 8 1.5M5 5h6v6H5z"/></svg>
           <span class="label">Vertical</span>
         </button>
-        <button id="settingsBtn" class="btn ghost" title="Detection settings">
+        <button id="settingsBtn" class="btn ghost" aria-label="Detection settings" title="Detection settings">
           <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 4h7.3a2 2 0 0 1 3.4 0H14v1.5h-1.3a2 2 0 0 1-3.4 0H2zm0 6.5h1.3a2 2 0 0 1 3.4 0H14V12H6.7a2 2 0 0 1-3.4 0H2z"/></svg>
           <span class="label">Detection</span>
         </button>
-        <label class="btn ghost" title="Transcribe an audio file">
+        <label class="btn ghost" title="Transcribe an audio file" aria-label="Open audio file">
           <input id="file" type="file" accept="audio/*,video/*" hidden />
           <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M2 3.5A1.5 1.5 0 0 1 3.5 2h3l1.5 1.5h4.5A1.5 1.5 0 0 1 14 5v7.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 12.5z"/></svg>
           <span class="label">Open file</span>
         </label>
-        <button id="export" class="btn ghost" title="Download as MIDI" disabled>
+        <button id="export" class="btn ghost" aria-label="Export MIDI" title="Download as MIDI" disabled>
           <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M7.25 2h1.5v6.4l2.2-2.2 1.06 1.06L8 11.28 3.99 7.26 5.05 6.2l2.2 2.2zM3 12.5h10V14H3z"/></svg>
           <span class="label">MIDI</span>
         </button>

@@ -55,6 +55,8 @@ export class PianoRoll {
   /** While recording: how much audio has been captured / analysed (s). */
   recordTime: number | null = null;
   analyzedTime = 0;
+  /** While recording: pitches sounding at the newest analysed moment (pressed on the keyboard). */
+  livePitches: Set<number> | null = null;
   /** Keep the newest audio in view while recording. */
   follow = true;
 
@@ -446,7 +448,11 @@ export class PianoRoll {
   private drawKeyboard(headT: number | null) {
     const { ctx, B, ruler } = this;
     const kh = this.keyH;
-    const active = headT !== null ? this.activeAt(headT) : new Set<number>();
+    const active = this.livePitches
+      ? new Set(this.livePitches)
+      : headT !== null
+        ? this.activeAt(headT)
+        : new Set<number>();
     if (this.pressedKey !== null) active.add(this.pressedKey);
 
     ctx.save();
@@ -471,6 +477,9 @@ export class PianoRoll {
       if (active.has(p)) {
         ctx.fillStyle = C.keyActive;
         this.fill(0, b0, KEY_LEN, b1 - b0);
+        // Shadow at the hinge end so the key reads as pushed down.
+        ctx.fillStyle = 'rgba(0,0,0,0.22)';
+        this.fill(0, b0, 5, b1 - b0);
       }
       ctx.fillStyle = C.keyLine;
       this.fill(0, Math.round(b1) - 0.5, KEY_LEN, 1);
@@ -483,9 +492,11 @@ export class PianoRoll {
       if (!isBlackKey(p)) continue;
       const b = this.pitchB(p);
       if (b + kh < ruler || b > B) continue;
-      ctx.fillStyle = active.has(p) ? '#4fb85c' : C.keyBlack;
+      const down = active.has(p);
+      ctx.fillStyle = down ? '#4fb85c' : C.keyBlack;
       ctx.beginPath();
-      ctx.roundRect(...this.box(-3, b, KEY_LEN * 0.6 + 3, kh), 2);
+      // Pressed black keys sink in, so they look slightly shorter.
+      ctx.roundRect(...this.box(-3, b, KEY_LEN * 0.6 + (down ? 0 : 3), kh), 2);
       ctx.fill();
     }
     // Border between keyboard and grid

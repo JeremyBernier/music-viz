@@ -2,7 +2,7 @@ import type { GraphModel } from '@tensorflow/tfjs';
 import { decodeFile, listInputs, startRecording, type Recorder } from './audio';
 import { frameToSeconds, SAMPLE_RATE } from './constants';
 import { notesToMidi } from './midi';
-import { DEFAULT_PARAMS, NoteTracker, type NoteParams } from './notes';
+import { DEFAULT_PARAMS, NoteTracker, type Note, type NoteParams } from './notes';
 import { formatTime, PianoRoll } from './pianoRoll';
 import { Player, type PlayMode } from './player';
 import { loadModel, StreamingTranscriber } from './transcriber';
@@ -50,11 +50,20 @@ function updateButtons() {
   fileInput.disabled = recorder !== null || busy || !model;
 }
 
+/** Pitches still sounding at the newest analysed row (a note's end is its last loud row). */
+function soundingAt(notes: Note[], rows: number): Set<number> {
+  const s = new Set<number>();
+  for (const n of notes) if (n.end >= rows - 2) s.add(n.pitch);
+  return s;
+}
+
 function newSession() {
   player.stop();
   transcriber = new StreamingTranscriber(model!, () => {
+    const rows = transcriber!.store.rows;
     tracker.update(transcriber!.store);
-    roll.analyzedTime = frameToSeconds(transcriber!.store.rows);
+    roll.analyzedTime = frameToSeconds(rows);
+    if (recorder) roll.livePitches = soundingAt(tracker.notes, rows);
     refreshNotes();
   });
   tracker.reset();
@@ -106,6 +115,7 @@ async function stopRecording() {
   // Final pass over the whole take so everything is decoded consistently.
   tracker.recompute(transcriber.store);
   roll.recordTime = null;
+  roll.livePitches = null;
   roll.playhead = 0;
   busy = false;
   refreshNotes();
