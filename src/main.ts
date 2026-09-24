@@ -270,6 +270,29 @@ document.addEventListener('pointerdown', (e) => {
   }
 });
 
+// ---------------------------------------------------------------- orientation
+
+const orientationBtn = $<HTMLButtonElement>('orientation');
+
+function setVertical(vertical: boolean) {
+  roll.setVertical(vertical);
+  orientationBtn.classList.toggle('active', vertical);
+  orientationBtn.setAttribute('aria-pressed', String(vertical));
+  document.querySelector('.stage')!.classList.toggle('vertical', vertical);
+  try {
+    localStorage.setItem('vertical', vertical ? '1' : '0');
+  } catch {
+    /* storage unavailable */
+  }
+}
+
+orientationBtn.addEventListener('click', () => setVertical(!roll.isVertical));
+try {
+  if (localStorage.getItem('vertical') === '1') setVertical(true);
+} catch {
+  /* storage unavailable */
+}
+
 // ---------------------------------------------------------------- devices
 
 async function populateDevices() {
@@ -315,6 +338,8 @@ window.addEventListener('keydown', (e) => {
     togglePlay();
   } else if (e.key === 'r' || e.key === 'R') {
     void toggleRecord();
+  } else if (e.key === 'v' || e.key === 'V') {
+    setVertical(!roll.isVertical);
   }
 });
 

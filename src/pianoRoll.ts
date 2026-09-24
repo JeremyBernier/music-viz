@@ -3,8 +3,8 @@ import type { Note } from './notes';
 
 const LOWEST = 21; // A0
 const HIGHEST = 108; // C8
-const KEYBOARD_W = 72;
-const RULER_H = 26;
+/** Length of the keys (keyboard width in horizontal mode, height in vertical mode). */
+const KEY_LEN = 72;
 
 const C = {
   bg: '#1d2327',
@@ -27,17 +27,26 @@ const C = {
   analyzed: 'rgba(255,92,92,0.06)',
 };
 
+/**
+ * FL Studio–style piano roll.
+ *
+ * Drawing is done in axis coordinates: `a` runs along the time axis (the keyboard occupies
+ * a < KEY_LEN) and `b` runs along the pitch axis (the ruler occupies b < ruler size).
+ * Horizontal mode maps (a, b) to screen (x, y); vertical mode maps it to (y, x), which puts
+ * the keyboard on top with time flowing downwards (a 90° clockwise rotation).
+ */
 export class PianoRoll {
   private ctx: CanvasRenderingContext2D;
   private w = 0;
   private h = 0;
-  private keyH = 14;
+  private vertical = false;
+  private keyH = 14; // size of one semitone along the pitch axis
   private pxPerSec = 110;
-  private scrollX = 0; // seconds at the left edge of the grid
-  private scrollY = 0; // px offset from the top (C8)
+  private scrollT = 0; // seconds at the start of the time axis
+  private scrollP = 0; // px offset along the pitch axis
   private dirty = true;
   private hover: Note | null = null;
-  private drag: { x: number; y: number; sx: number; sy: number; moved: boolean } | null = null;
+  private drag: { a: number; b: number; st: number; sp: number; moved: boolean } | null = null;
   private pressedKey: number | null = null;
 
   notes: Note[] = [];
@@ -70,35 +79,97 @@ export class PianoRoll {
     this.dirty = true;
   }
 
-  get gridWidth() {
-    return this.w - KEYBOARD_W;
+  get isVertical() {
+    return this.vertical;
   }
 
-  get pixelsPerSecond() {
-    return this.pxPerSec;
-  }
-
-  scrollToPitch(pitch: number) {
-    const gridH = this.h - RULER_H;
-    this.scrollY = this.clampY((HIGHEST - pitch) * this.keyH - gridH / 2);
+  /** Switch between horizontal (keys on the left) and vertical (keys on top) layouts. */
+  setVertical(vertical: boolean) {
+    if (vertical === this.vertical) return;
+    const center = this.pitchAt(this.ruler + (this.B - this.ruler) / 2);
+    const headT = this.playhead ?? this.recordTime;
+    this.vertical = vertical;
+    // Vertical: fit the whole keyboard across the screen if the keys stay a usable size.
+    this.keyH = vertical ? Math.max(10, Math.min(32, (this.B - this.ruler) / (HIGHEST - LOWEST + 1))) : 14;
+    this.scrollToPitch(center);
+    if (headT !== null) this.reveal(headT, 0.5);
     this.invalidate();
   }
 
-  /** Scroll horizontally so `seconds` is visible, at `fraction` of the grid width. */
+  // ---------------------------------------------------------------- geometry
+
+  /** Screen extent along the time axis. */
+  private get A() {
+    return this.vertical ? this.h : this.w;
+  }
+  /** Screen extent along the pitch axis. */
+  private get B() {
+    return this.vertical ? this.w : this.h;
+  }
+  /** Ruler size across the pitch axis (vertical mode needs room for horizontal labels). */
+  private get ruler() {
+    return this.vertical ? 44 : 26;
+  }
+
+  private get timeLen() {
+    return this.A - KEY_LEN;
+  }
+
+  /** Axis-space rectangle → screen [x, y, w, h]. */
+  private box(a: number, b: number, da: number, db: number): [number, number, number, number] {
+    return this.vertical ? [b, a, db, da] : [a, b, da, db];
+  }
+  private fill(a: number, b: number, da: number, db: number) {
+    this.ctx.fillRect(...this.box(a, b, da, db));
+  }
+  private pt(a: number, b: number): [number, number] {
+    return this.vertical ? [b, a] : [a, b];
+  }
+  private toAxis(x: number, y: number) {
+    return this.vertical ? { a: y, b: x } : { a: x, b: y };
+  }
+
+  /** Start of pitch p's lane along the pitch axis. Low notes are at the bottom / on the left. */
+  private pitchB(p: number) {
+    const idx = this.vertical ? p - LOWEST : HIGHEST - p;
+    return this.ruler + idx * this.keyH - this.scrollP;
+  }
+  /** Lane edge shared with the next lower pitch. */
+  private lowerEdge(p: number) {
+    return this.vertical ? this.pitchB(p) : this.pitchB(p) + this.keyH;
+  }
+  private pitchAt(b: number) {
+    const idx = Math.floor((b - this.ruler + this.scrollP) / this.keyH);
+    return this.vertical ? LOWEST + idx : HIGHEST - idx;
+  }
+  private timeA(t: number) {
+    return KEY_LEN + (t - this.scrollT) * this.pxPerSec;
+  }
+  private timeAt(a: number) {
+    return this.scrollT + (a - KEY_LEN) / this.pxPerSec;
+  }
+
+  scrollToPitch(pitch: number) {
+    const idx = this.vertical ? pitch - LOWEST : HIGHEST - pitch;
+    this.scrollP = this.clampP((idx + 0.5) * this.keyH - (this.B - this.ruler) / 2);
+    this.invalidate();
+  }
+
+  /** Scroll along the time axis so `seconds` is visible, at `fraction` of the visible span. */
   reveal(seconds: number, fraction = 0.85) {
-    const visible = this.gridWidth / this.pxPerSec;
-    if (seconds < this.scrollX || seconds > this.scrollX + visible * 0.95) {
-      this.scrollX = Math.max(0, seconds - visible * fraction);
+    const visible = this.timeLen / this.pxPerSec;
+    if (seconds < this.scrollT || seconds > this.scrollT + visible * 0.95) {
+      this.scrollT = Math.max(0, seconds - visible * fraction);
       this.invalidate();
     }
   }
 
   resetView() {
-    this.scrollX = 0;
+    this.scrollT = 0;
     this.invalidate();
   }
 
-  /** Scroll vertically so the given notes are centred. */
+  /** Scroll along the pitch axis so the given notes are centred. */
   frameNotes(notes: Note[]) {
     if (!notes.length) return;
     let lo = HIGHEST;
@@ -118,40 +189,26 @@ export class PianoRoll {
     this.canvas.width = Math.round(rect.width * dpr);
     this.canvas.height = Math.round(rect.height * dpr);
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this.scrollY = this.clampY(this.scrollY);
+    this.scrollP = this.clampP(this.scrollP);
     this.invalidate();
   }
 
-  private clampY(y: number) {
+  private clampP(p: number) {
     const total = (HIGHEST - LOWEST + 1) * this.keyH;
-    return Math.max(0, Math.min(y, total - (this.h - RULER_H)));
+    return Math.max(0, Math.min(p, total - (this.B - this.ruler)));
   }
 
-  private pitchY(pitch: number) {
-    return RULER_H + (HIGHEST - pitch) * this.keyH - this.scrollY;
-  }
-
-  private timeX(t: number) {
-    return KEYBOARD_W + (t - this.scrollX) * this.pxPerSec;
-  }
-
-  private pitchAt(y: number) {
-    return HIGHEST - Math.floor((y - RULER_H + this.scrollY) / this.keyH);
-  }
-
-  private timeAt(x: number) {
-    return this.scrollX + (x - KEYBOARD_W) / this.pxPerSec;
-  }
-
-  private noteAt(x: number, y: number): Note | null {
-    if (x < KEYBOARD_W || y < RULER_H) return null;
-    const pitch = this.pitchAt(y);
-    const t = this.timeAt(x);
+  private noteAt(a: number, b: number): Note | null {
+    if (a < KEY_LEN || b < this.ruler) return null;
+    const pitch = this.pitchAt(b);
+    const t = this.timeAt(a);
     for (const n of this.notes) {
       if (n.pitch === pitch && frameToSeconds(n.start) <= t && frameToSeconds(n.end) >= t) return n;
     }
     return null;
   }
+
+  // ---------------------------------------------------------------- input
 
   private bindEvents() {
     const c = this.canvas;
@@ -159,24 +216,26 @@ export class PianoRoll {
       'wheel',
       (e) => {
         e.preventDefault();
+        const { a } = this.local(e);
         if (e.ctrlKey || e.metaKey) {
           // Zoom time around the cursor (pinch-to-zoom on trackpads also sends ctrlKey).
-          const rect = c.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const t = this.timeAt(x);
+          const t = this.timeAt(a);
           this.pxPerSec = Math.max(15, Math.min(1500, this.pxPerSec * Math.exp(-e.deltaY * 0.01)));
-          this.scrollX = Math.max(0, t - (x - KEYBOARD_W) / this.pxPerSec);
+          this.scrollT = Math.max(0, t - (a - KEY_LEN) / this.pxPerSec);
         } else if (e.altKey) {
           this.keyH = Math.max(6, Math.min(32, this.keyH * Math.exp(-e.deltaY * 0.005)));
-          this.scrollY = this.clampY(this.scrollY);
+          this.scrollP = this.clampP(this.scrollP);
         } else {
-          const dx = e.shiftKey ? e.deltaY : e.deltaX;
-          const dy = e.shiftKey ? 0 : e.deltaY;
-          if (dx) {
-            this.scrollX = Math.max(0, this.scrollX + dx / this.pxPerSec);
+          // The wheel's main direction follows the screen: in vertical mode it moves through time.
+          const main = e.shiftKey ? 0 : e.deltaY;
+          const cross = e.shiftKey ? e.deltaY : e.deltaX;
+          const dt = this.vertical ? main : cross;
+          const dp = this.vertical ? cross : main;
+          if (dt) {
+            this.scrollT = Math.max(0, this.scrollT + dt / this.pxPerSec);
             this.follow = false;
           }
-          this.scrollY = this.clampY(this.scrollY + dy);
+          this.scrollP = this.clampP(this.scrollP + dp);
         }
         this.invalidate();
       },
@@ -184,41 +243,43 @@ export class PianoRoll {
     );
 
     c.addEventListener('pointerdown', (e) => {
-      const { x, y } = this.local(e);
-      if (y < RULER_H && x > KEYBOARD_W) {
-        this.onSeek(Math.max(0, this.timeAt(x)));
+      const { a, b } = this.local(e);
+      if (b < this.ruler && a > KEY_LEN) {
+        this.onSeek(Math.max(0, this.timeAt(a)));
         return;
       }
-      if (x < KEYBOARD_W && y > RULER_H) {
-        this.pressedKey = this.pitchAt(y);
+      if (a < KEY_LEN && b > this.ruler) {
+        this.pressedKey = this.pitchAt(b);
         this.onKeyPress(this.pressedKey);
         this.invalidate();
         return;
       }
       c.setPointerCapture(e.pointerId);
-      this.drag = { x, y, sx: this.scrollX, sy: this.scrollY, moved: false };
+      this.drag = { a, b, st: this.scrollT, sp: this.scrollP, moved: false };
     });
     c.addEventListener('pointermove', (e) => {
-      const { x, y } = this.local(e);
+      const { a, b } = this.local(e);
       if (this.drag) {
-        const dx = x - this.drag.x;
-        const dy = y - this.drag.y;
-        if (Math.abs(dx) + Math.abs(dy) > 3) this.drag.moved = true;
+        const da = a - this.drag.a;
+        const db = b - this.drag.b;
+        if (Math.abs(da) + Math.abs(db) > 3) this.drag.moved = true;
         if (this.drag.moved) {
-          this.scrollX = Math.max(0, this.drag.sx - dx / this.pxPerSec);
-          this.scrollY = this.clampY(this.drag.sy - dy);
-          if (dx) this.follow = false;
+          this.scrollT = Math.max(0, this.drag.st - da / this.pxPerSec);
+          this.scrollP = this.clampP(this.drag.sp - db);
+          if (da) this.follow = false;
           c.style.cursor = 'grabbing';
           this.invalidate();
         }
         return;
       }
-      const hover = this.noteAt(x, y);
+      const hover = this.noteAt(a, b);
       if (hover !== this.hover) {
         this.hover = hover;
         this.invalidate();
       }
-      c.style.cursor = hover || (x < KEYBOARD_W && y > RULER_H) ? 'pointer' : y < RULER_H ? 'col-resize' : 'grab';
+      const onRuler = b < this.ruler;
+      c.style.cursor =
+        hover || (a < KEY_LEN && !onRuler) ? 'pointer' : onRuler ? (this.vertical ? 'row-resize' : 'col-resize') : 'grab';
     });
     const end = (e: PointerEvent) => {
       if (this.pressedKey !== null) {
@@ -226,9 +287,9 @@ export class PianoRoll {
         this.invalidate();
       }
       if (!this.drag) return;
-      const { x, y } = this.local(e);
+      const { a, b } = this.local(e);
       if (!this.drag.moved) {
-        const note = this.noteAt(x, y);
+        const note = this.noteAt(a, b);
         if (note) this.onNoteClick(note);
       }
       this.drag = null;
@@ -244,9 +305,10 @@ export class PianoRoll {
     });
   }
 
+  /** Pointer position in axis coordinates. */
   private local(e: MouseEvent) {
     const rect = this.canvas.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    return this.toAxis(e.clientX - rect.left, e.clientY - rect.top);
   }
 
   /** Pitches sounding at time t. */
@@ -256,44 +318,48 @@ export class PianoRoll {
     return s;
   }
 
+  // ---------------------------------------------------------------- drawing
+
   private draw() {
     this.dirty = false;
-    const { ctx, w, h } = this;
+    const { ctx, A, B, ruler } = this;
     const kh = this.keyH;
     ctx.fillStyle = C.bg;
-    ctx.fillRect(0, 0, w, h);
+    ctx.fillRect(0, 0, this.w, this.h);
 
-    const tLeft = this.scrollX;
-    const tRight = this.timeAt(w);
+    const tStart = this.scrollT;
+    const tEnd = this.timeAt(A);
 
-    // --- grid rows
+    // --- pitch lanes
     ctx.save();
     ctx.beginPath();
-    ctx.rect(KEYBOARD_W, RULER_H, w - KEYBOARD_W, h - RULER_H);
+    ctx.rect(...this.box(KEY_LEN, ruler, A - KEY_LEN, B - ruler));
     ctx.clip();
     for (let p = HIGHEST; p >= LOWEST; p--) {
-      const y = this.pitchY(p);
-      if (y > h || y + kh < RULER_H) continue;
+      const b = this.pitchB(p);
+      if (b > B || b + kh < ruler) continue;
       ctx.fillStyle = isBlackKey(p) ? C.rowBlack : C.rowWhite;
-      ctx.fillRect(KEYBOARD_W, y, w, kh);
-      ctx.fillStyle = p % 12 === 0 ? C.octaveLine : C.rowLine;
-      ctx.fillRect(KEYBOARD_W, y + kh - (p % 12 === 0 ? 1.5 : 1), w, p % 12 === 0 ? 1.5 : 1);
+      this.fill(KEY_LEN, b, A, kh);
+      const octave = p % 12 === 0;
+      const t = octave ? 1.5 : 1;
+      ctx.fillStyle = octave ? C.octaveLine : C.rowLine;
+      this.fill(KEY_LEN, this.vertical ? this.lowerEdge(p) : this.lowerEdge(p) - t, A, t);
     }
 
     // Region already analysed while recording.
     if (this.recordTime !== null) {
-      const x0 = this.timeX(0);
+      const a0 = this.timeA(0);
       ctx.fillStyle = C.analyzed;
-      ctx.fillRect(x0, RULER_H, this.timeX(this.analyzedTime) - x0, h);
+      this.fill(a0, ruler, this.timeA(this.analyzedTime) - a0, B);
     }
 
-    // --- vertical time grid
+    // --- time grid
     const step = this.gridStep();
-    for (let t = Math.floor(tLeft / step) * step; t <= tRight; t += step) {
-      const x = Math.round(this.timeX(t)) + 0.5;
+    for (let t = Math.floor(tStart / step) * step; t <= tEnd; t += step) {
+      const a = Math.round(this.timeA(t)) + 0.5;
       const strong = Math.abs(t / (step * 4) - Math.round(t / (step * 4))) < 1e-6;
       ctx.fillStyle = strong ? C.gridStrong : C.gridWeak;
-      ctx.fillRect(x, RULER_H, 1, h);
+      this.fill(a, ruler, 1, B);
     }
 
     // --- notes
@@ -303,134 +369,154 @@ export class PianoRoll {
     for (const n of this.notes) {
       const t0 = frameToSeconds(n.start);
       const t1 = frameToSeconds(n.end);
-      if (t1 < tLeft || t0 > tRight) continue;
-      const y = this.pitchY(n.pitch);
-      if (y > h || y + kh < RULER_H) continue;
-      const x0 = this.timeX(t0);
-      const nw = Math.max(3, (t1 - t0) * this.pxPerSec - 1);
-      const a = Math.min(1, Math.max(0.35, n.amplitude * 1.3));
-      const hovered = n === this.hover;
-      ctx.fillStyle = hovered ? '#c8ffd0' : `rgba(${nr},${ng},${nb},${a})`;
-      roundRect(ctx, x0 + 0.5, y + 1, nw, kh - 2, 3);
+      if (t1 < tStart || t0 > tEnd) continue;
+      const b = this.pitchB(n.pitch);
+      if (b > B || b + kh < ruler) continue;
+      const a0 = this.timeA(t0);
+      const len = Math.max(3, (t1 - t0) * this.pxPerSec - 1);
+      const alpha = Math.min(1, Math.max(0.35, n.amplitude * 1.3));
+      ctx.fillStyle = n === this.hover ? '#c8ffd0' : `rgba(${nr},${ng},${nb},${alpha})`;
+      ctx.beginPath();
+      const [x, y, w, h] = this.box(a0 + 0.5, b + 1, len, kh - 2);
+      ctx.roundRect(x, y, w, h, Math.min(3, w / 2, h / 2));
       ctx.fill();
       ctx.strokeStyle = 'rgba(0,0,0,0.35)';
       ctx.lineWidth = 1;
       ctx.stroke();
-      if (nw > 26 && kh >= 11) {
-        ctx.fillStyle = C.noteText;
-        ctx.fillText(noteName(n.pitch), x0 + 4, y + kh / 2 + 0.5);
+      ctx.fillStyle = C.noteText;
+      if (!this.vertical && len > 26 && kh >= 11) {
+        ctx.textAlign = 'left';
+        ctx.fillText(noteName(n.pitch), x + 4, y + h / 2 + 0.5);
+      } else if (this.vertical && len > 16 && kh >= 20) {
+        ctx.textAlign = 'center';
+        ctx.fillText(noteName(n.pitch), x + w / 2, y + 8);
       }
     }
+    ctx.textAlign = 'left';
 
     // --- heads
     if (this.recordTime !== null) {
-      const x = this.timeX(this.recordTime);
       ctx.fillStyle = C.recordHead;
-      ctx.fillRect(x - 1, RULER_H, 2, h);
+      this.fill(this.timeA(this.recordTime) - 1, ruler, 2, B);
     }
     if (this.playhead !== null) {
-      const x = this.timeX(this.playhead);
       ctx.fillStyle = C.playhead;
-      ctx.fillRect(x - 1, RULER_H, 2, h);
+      this.fill(this.timeA(this.playhead) - 1, ruler, 2, B);
     }
     ctx.restore();
 
     // --- ruler
     ctx.fillStyle = C.ruler;
-    ctx.fillRect(0, 0, w, RULER_H);
-    ctx.fillStyle = C.rulerText;
+    this.fill(0, 0, A, ruler);
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
     ctx.textBaseline = 'middle';
     const labelStep = step * 4;
-    for (let t = Math.floor(tLeft / step) * step; t <= tRight; t += step) {
-      const x = Math.round(this.timeX(t)) + 0.5;
-      if (x < KEYBOARD_W) continue;
+    for (let t = Math.floor(tStart / step) * step; t <= tEnd; t += step) {
+      const a = Math.round(this.timeA(t)) + 0.5;
+      if (a < KEY_LEN) continue;
       const strong = Math.abs(t / labelStep - Math.round(t / labelStep)) < 1e-6;
-      ctx.fillRect(x, strong ? RULER_H - 9 : RULER_H - 4, 1, strong ? 9 : 4);
-      if (strong) ctx.fillText(formatTime(t), x + 4, RULER_H / 2 - 2);
+      ctx.fillStyle = C.rulerText;
+      this.fill(a, strong ? ruler - 9 : ruler - 4, 1, strong ? 9 : 4);
+      if (!strong) continue;
+      if (this.vertical) ctx.fillText(formatTime(t), 4, a + 8);
+      else ctx.fillText(formatTime(t), a + 4, ruler / 2 - 2);
     }
     const headT = this.playhead ?? this.recordTime;
     if (headT !== null) {
-      const x = this.timeX(headT);
-      if (x >= KEYBOARD_W) {
+      const a = this.timeA(headT);
+      if (a >= KEY_LEN) {
         ctx.fillStyle = this.playhead !== null ? C.playhead : C.recordHead;
         ctx.beginPath();
-        ctx.moveTo(x - 6, RULER_H - 10);
-        ctx.lineTo(x + 6, RULER_H - 10);
-        ctx.lineTo(x, RULER_H);
+        ctx.moveTo(...this.pt(a - 6, ruler - 10));
+        ctx.lineTo(...this.pt(a + 6, ruler - 10));
+        ctx.lineTo(...this.pt(a, ruler));
         ctx.fill();
       }
     }
 
     this.drawKeyboard(headT);
 
-    // Top-left corner
+    // Corner where the ruler and keyboard meet
     ctx.fillStyle = C.ruler;
-    ctx.fillRect(0, 0, KEYBOARD_W, RULER_H);
+    this.fill(0, 0, KEY_LEN, ruler);
 
-    // Hover tooltip
-    if (this.hover) {
-      const n = this.hover;
-      const text = `${noteName(n.pitch)}  ·  ${formatTime(frameToSeconds(n.start), true)}  ·  ${Math.round(
-        (frameToSeconds(n.end) - frameToSeconds(n.start)) * 1000,
-      )} ms`;
-      ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
-      const tw = ctx.measureText(text).width + 16;
-      let x = this.timeX(frameToSeconds(n.start));
-      x = Math.max(KEYBOARD_W + 4, Math.min(x, w - tw - 4));
-      let y = this.pitchY(n.pitch) - 26;
-      if (y < RULER_H + 2) y = this.pitchY(n.pitch) + kh + 4;
-      ctx.fillStyle = 'rgba(10,12,14,0.92)';
-      roundRect(ctx, x, y, tw, 22, 5);
-      ctx.fill();
-      ctx.fillStyle = '#e6ecef';
-      ctx.fillText(text, x + 8, y + 11);
-    }
+    if (this.hover) this.drawTooltip(this.hover);
   }
 
   private drawKeyboard(headT: number | null) {
-    const { ctx, h } = this;
+    const { ctx, B, ruler } = this;
     const kh = this.keyH;
     const active = headT !== null ? this.activeAt(headT) : new Set<number>();
     if (this.pressedKey !== null) active.add(this.pressedKey);
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(0, RULER_H, KEYBOARD_W, h - RULER_H);
+    ctx.rect(...this.box(0, ruler, KEY_LEN, B - ruler));
     ctx.clip();
     ctx.fillStyle = C.keyWhite;
-    ctx.fillRect(0, RULER_H, KEYBOARD_W, h);
+    this.fill(0, ruler, KEY_LEN, B);
 
-    // White keys extend halfway into neighbouring black-key rows, like a real keyboard.
+    // White keys extend halfway into neighbouring black-key lanes, like a real keyboard.
+    // Neighbours along the pitch axis: `before` has the smaller b coordinate.
     ctx.font = '600 9px ui-sans-serif, system-ui, sans-serif';
     ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
     for (let p = HIGHEST; p >= LOWEST; p--) {
       if (isBlackKey(p)) continue;
-      const top = this.pitchY(p) - (p < HIGHEST && isBlackKey(p + 1) ? kh / 2 : 0);
-      const bottom = this.pitchY(p) + kh + (p > LOWEST && isBlackKey(p - 1) ? kh / 2 : 0);
-      if (bottom < RULER_H || top > h) continue;
+      const before = this.vertical ? p - 1 : p + 1;
+      const after = this.vertical ? p + 1 : p - 1;
+      const b0 = this.pitchB(p) - (before >= LOWEST && before <= HIGHEST && isBlackKey(before) ? kh / 2 : 0);
+      const b1 = this.pitchB(p) + kh + (after >= LOWEST && after <= HIGHEST && isBlackKey(after) ? kh / 2 : 0);
+      if (b1 < ruler || b0 > B) continue;
       if (active.has(p)) {
         ctx.fillStyle = C.keyActive;
-        ctx.fillRect(0, top, KEYBOARD_W, bottom - top);
+        this.fill(0, b0, KEY_LEN, b1 - b0);
       }
       ctx.fillStyle = C.keyLine;
-      ctx.fillRect(0, Math.round(bottom) - 0.5, KEYBOARD_W, 1);
+      this.fill(0, Math.round(b1) - 0.5, KEY_LEN, 1);
       if (p % 12 === 0 && kh >= 9) {
         ctx.fillStyle = '#56616a';
-        ctx.fillText(noteName(p), KEYBOARD_W - 24, this.pitchY(p) + kh / 2);
+        ctx.fillText(noteName(p), ...this.pt(KEY_LEN - (this.vertical ? 10 : 16), this.pitchB(p) + kh / 2));
       }
     }
     for (let p = HIGHEST; p >= LOWEST; p--) {
       if (!isBlackKey(p)) continue;
-      const y = this.pitchY(p);
-      if (y + kh < RULER_H || y > h) continue;
+      const b = this.pitchB(p);
+      if (b + kh < ruler || b > B) continue;
       ctx.fillStyle = active.has(p) ? '#4fb85c' : C.keyBlack;
-      roundRect(ctx, -3, y, KEYBOARD_W * 0.6 + 3, kh, 2);
+      ctx.beginPath();
+      ctx.roundRect(...this.box(-3, b, KEY_LEN * 0.6 + 3, kh), 2);
       ctx.fill();
     }
+    // Border between keyboard and grid
     ctx.fillStyle = '#0c0f11';
-    ctx.fillRect(KEYBOARD_W - 1, RULER_H, 1, h);
+    this.fill(KEY_LEN - 1, ruler, 1, B);
     ctx.restore();
+    ctx.textAlign = 'left';
+  }
+
+  private drawTooltip(n: Note) {
+    const { ctx } = this;
+    const text = `${noteName(n.pitch)}  ·  ${formatTime(frameToSeconds(n.start), true)}  ·  ${Math.round(
+      (frameToSeconds(n.end) - frameToSeconds(n.start)) * 1000,
+    )} ms`;
+    ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    const tw = ctx.measureText(text).width + 16;
+    const th = 22;
+    const [nx, ny, nw, nh] = this.box(this.timeA(frameToSeconds(n.start)), this.pitchB(n.pitch), 0, this.keyH);
+    // Place above the note, or below it if there's no room.
+    const [minX, minY] = this.pt(KEY_LEN, this.ruler);
+    let x = Math.max(minX + 4, Math.min(nx + (this.vertical ? nw + 6 : 0), this.w - tw - 4));
+    let y = this.vertical ? ny : ny - th - 4;
+    if (y < minY + 2) y = ny + nh + 4;
+    y = Math.min(y, this.h - th - 4);
+    ctx.fillStyle = 'rgba(10,12,14,0.92)';
+    ctx.beginPath();
+    ctx.roundRect(x, y, tw, th, 5);
+    ctx.fill();
+    ctx.fillStyle = '#e6ecef';
+    ctx.fillText(text, x + 8, y + th / 2);
   }
 
   /** Grid spacing in seconds that keeps lines ~25-60 px apart. */
@@ -439,12 +525,6 @@ export class PianoRoll {
     for (const s of steps) if (s * this.pxPerSec >= 25) return s;
     return 60;
   }
-}
-
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
-  r = Math.min(r, w / 2, h / 2);
-  ctx.beginPath();
-  ctx.roundRect(x, y, w, h, r);
 }
 
 export function formatTime(t: number, precise = false) {
