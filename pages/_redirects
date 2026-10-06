@@ -1,0 +1,2 @@
+# The site lives under /music-viz/ (see vite.config.ts). Links to the Pages root keep working.
+/ /music-viz/ 302

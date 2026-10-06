@@ -1,10 +1,18 @@
 import { frameToSeconds, isBlackKey, noteName } from './constants';
+import { DRUM_KINDS, PARTS, partRgb, type DrumHit, type DrumKind, type Instrument, type Part } from './instruments';
 import type { Note } from './notes';
 
 const LOWEST = 21; // A0
 const HIGHEST = 108; // C8
 /** Length of the keys (keyboard width in horizontal mode, height in vertical mode). */
 const KEY_LEN = 72;
+/** Size of one drum row (kick / snare / hi-hat) across the pitch axis. */
+const DRUM_ROW = 17;
+/** A drum hit is drawn this long (s). */
+const DRUM_HIT_LEN = 0.07;
+
+const rgb = ([r, g, b]: readonly number[], a = 1) => `rgba(${r},${g},${b},${a})`;
+const darker = ([r, g, b]: readonly number[]) => [r * 0.7, g * 0.7, b * 0.7];
 
 const C = {
   bg: '#1d2327',
@@ -19,10 +27,10 @@ const C = {
   keyWhite: '#e9edf0',
   keyBlack: '#1b1f22',
   keyLine: '#9aa4ab',
-  keyActive: '#7ee08a',
-  note: [126, 224, 138] as const,
-  noteText: '#0f2a14',
-  playhead: '#ff9c4a',
+  noteText: '#10181c',
+  drumLane: '#1a2024',
+  drumLaneLine: '#12171a',
+  playhead: '#f2f5f7',
   recordHead: '#ff5c5c',
   analyzed: 'rgba(255,92,92,0.06)',
 };
@@ -34,6 +42,9 @@ const C = {
  * a < KEY_LEN) and `b` runs along the pitch axis (the ruler occupies b < ruler size).
  * Horizontal mode maps (a, b) to screen (x, y); vertical mode maps it to (y, x), which puts
  * the keyboard on top with time flowing downwards (a 90° clockwise rotation).
+ *
+ * When drums are shown, three fixed drum rows sit between the ruler and the pitch lanes
+ * (b in [ruler, top)); the pitch lanes scroll underneath.
  */
 export class PianoRoll {
   private ctx: CanvasRenderingContext2D;
@@ -50,18 +61,26 @@ export class PianoRoll {
   private pressedKey: number | null = null;
 
   notes: Note[] = [];
+  drums: DrumHit[] = [];
+  /** Show the drum rows (kick / snare / hi-hat). */
+  showDrums = false;
+  /** Parts hidden from the roll (toggled in the legend). */
+  hidden = new Set<Part>();
   /** Playback position (s), or null when not playing. */
   playhead: number | null = null;
   /** While recording: how much audio has been captured / analysed (s). */
   recordTime: number | null = null;
   analyzedTime = 0;
   /** While recording: pitches sounding at the newest analysed moment (pressed on the keyboard). */
-  livePitches: Set<number> | null = null;
+  livePitches: Map<number, Instrument> | null = null;
+  /** While recording: drum kinds hit at the newest analysed moment. */
+  liveDrums: Set<DrumKind> | null = null;
   /** Keep the newest audio in view while recording. */
   follow = true;
 
   onNoteClick: (note: Note) => void = () => {};
   onKeyPress: (pitch: number) => void = () => {};
+  onDrumPress: (kind: DrumKind) => void = () => {};
   onSeek: (seconds: number) => void = () => {};
 
   constructor(private canvas: HTMLCanvasElement) {
@@ -88,11 +107,11 @@ export class PianoRoll {
   /** Switch between horizontal (keys on the left) and vertical (keys on top) layouts. */
   setVertical(vertical: boolean) {
     if (vertical === this.vertical) return;
-    const center = this.pitchAt(this.ruler + (this.B - this.ruler) / 2);
+    const center = this.pitchAt(this.top + (this.B - this.top) / 2);
     const headT = this.playhead ?? this.recordTime;
     this.vertical = vertical;
     // Vertical: fit the whole keyboard across the screen if the keys stay a usable size.
-    this.keyH = vertical ? Math.max(10, Math.min(32, (this.B - this.ruler) / (HIGHEST - LOWEST + 1))) : 14;
+    this.keyH = vertical ? Math.max(10, Math.min(32, (this.B - this.top) / (HIGHEST - LOWEST + 1))) : 14;
     this.scrollToPitch(center);
     if (headT !== null) this.reveal(headT, 0.5);
     this.invalidate();
@@ -111,6 +130,15 @@ export class PianoRoll {
   /** Ruler size across the pitch axis (vertical mode needs room for horizontal labels). */
   private get ruler() {
     return this.vertical ? 44 : 26;
+  }
+
+  /** Where the pitch lanes start along the pitch axis (after the ruler and drum rows). */
+  private get top() {
+    return this.ruler + (this.showDrums ? DRUM_KINDS.length * DRUM_ROW : 0);
+  }
+
+  private drumB(i: number) {
+    return this.ruler + i * DRUM_ROW;
   }
 
   private get timeLen() {
@@ -134,14 +162,14 @@ export class PianoRoll {
   /** Start of pitch p's lane along the pitch axis. Low notes are at the bottom / on the left. */
   private pitchB(p: number) {
     const idx = this.vertical ? p - LOWEST : HIGHEST - p;
-    return this.ruler + idx * this.keyH - this.scrollP;
+    return this.top + idx * this.keyH - this.scrollP;
   }
   /** Lane edge shared with the next lower pitch. */
   private lowerEdge(p: number) {
     return this.vertical ? this.pitchB(p) : this.pitchB(p) + this.keyH;
   }
   private pitchAt(b: number) {
-    const idx = Math.floor((b - this.ruler + this.scrollP) / this.keyH);
+    const idx = Math.floor((b - this.top + this.scrollP) / this.keyH);
     return this.vertical ? LOWEST + idx : HIGHEST - idx;
   }
   private timeA(t: number) {
@@ -153,7 +181,7 @@ export class PianoRoll {
 
   scrollToPitch(pitch: number) {
     const idx = this.vertical ? pitch - LOWEST : HIGHEST - pitch;
-    this.scrollP = this.clampP((idx + 0.5) * this.keyH - (this.B - this.ruler) / 2);
+    this.scrollP = this.clampP((idx + 0.5) * this.keyH - (this.B - this.top) / 2);
     this.invalidate();
   }
 
@@ -197,14 +225,22 @@ export class PianoRoll {
 
   private clampP(p: number) {
     const total = (HIGHEST - LOWEST + 1) * this.keyH;
-    return Math.max(0, Math.min(p, total - (this.B - this.ruler)));
+    return Math.max(0, Math.min(p, total - (this.B - this.top)));
+  }
+
+  /** Notes and drum hits currently shown (not hidden in the legend). */
+  private get visibleNotes() {
+    return this.hidden.size ? this.notes.filter((n) => !this.hidden.has(n.instrument)) : this.notes;
+  }
+  private get visibleDrums() {
+    return this.showDrums && !this.hidden.has('drums') ? this.drums : [];
   }
 
   private noteAt(a: number, b: number): Note | null {
-    if (a < KEY_LEN || b < this.ruler) return null;
+    if (a < KEY_LEN || b < this.top) return null;
     const pitch = this.pitchAt(b);
     const t = this.timeAt(a);
-    for (const n of this.notes) {
+    for (const n of this.visibleNotes) {
       if (n.pitch === pitch && frameToSeconds(n.start) <= t && frameToSeconds(n.end) >= t) return n;
     }
     return null;
@@ -250,7 +286,11 @@ export class PianoRoll {
         this.onSeek(Math.max(0, this.timeAt(a)));
         return;
       }
-      if (a < KEY_LEN && b > this.ruler) {
+      if (a < KEY_LEN && b > this.ruler && b < this.top) {
+        this.onDrumPress(DRUM_KINDS[Math.floor((b - this.ruler) / DRUM_ROW)].kind);
+        return;
+      }
+      if (a < KEY_LEN && b > this.top) {
         this.pressedKey = this.pitchAt(b);
         this.onKeyPress(this.pressedKey);
         this.invalidate();
@@ -313,10 +353,22 @@ export class PianoRoll {
     return this.toAxis(e.clientX - rect.left, e.clientY - rect.top);
   }
 
-  /** Pitches sounding at time t. */
-  private activeAt(t: number): Set<number> {
-    const s = new Set<number>();
-    for (const n of this.notes) if (frameToSeconds(n.start) <= t && frameToSeconds(n.end) > t) s.add(n.pitch);
+  /** Pitches sounding at time t, with the instrument playing each. */
+  private activeAt(t: number): Map<number, Instrument> {
+    const m = new Map<number, Instrument>();
+    for (const n of this.visibleNotes) {
+      if (frameToSeconds(n.start) <= t && frameToSeconds(n.end) > t) m.set(n.pitch, n.instrument);
+    }
+    return m;
+  }
+
+  /** Drum kinds hit just before time t. */
+  private drumsAt(t: number): Set<DrumKind> {
+    const s = new Set<DrumKind>();
+    for (const h of this.visibleDrums) {
+      const ht = frameToSeconds(h.row);
+      if (ht <= t && t - ht < 0.12) s.add(h.kind);
+    }
     return s;
   }
 
@@ -332,14 +384,16 @@ export class PianoRoll {
     const tStart = this.scrollT;
     const tEnd = this.timeAt(A);
 
+    const top = this.top;
+
     // --- pitch lanes
     ctx.save();
     ctx.beginPath();
-    ctx.rect(...this.box(KEY_LEN, ruler, A - KEY_LEN, B - ruler));
+    ctx.rect(...this.box(KEY_LEN, top, A - KEY_LEN, B - top));
     ctx.clip();
     for (let p = HIGHEST; p >= LOWEST; p--) {
       const b = this.pitchB(p);
-      if (b > B || b + kh < ruler) continue;
+      if (b > B || b + kh < top) continue;
       ctx.fillStyle = isBlackKey(p) ? C.rowBlack : C.rowWhite;
       this.fill(KEY_LEN, b, A, kh);
       const octave = p % 12 === 0;
@@ -365,19 +419,18 @@ export class PianoRoll {
     }
 
     // --- notes
-    const [nr, ng, nb] = C.note;
     ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif';
     ctx.textBaseline = 'middle';
-    for (const n of this.notes) {
+    for (const n of this.visibleNotes) {
       const t0 = frameToSeconds(n.start);
       const t1 = frameToSeconds(n.end);
       if (t1 < tStart || t0 > tEnd) continue;
       const b = this.pitchB(n.pitch);
-      if (b > B || b + kh < ruler) continue;
+      if (b > B || b + kh < top) continue;
       const a0 = this.timeA(t0);
       const len = Math.max(3, (t1 - t0) * this.pxPerSec - 1);
       const alpha = Math.min(1, Math.max(0.35, n.amplitude * 1.3));
-      ctx.fillStyle = n === this.hover ? '#c8ffd0' : `rgba(${nr},${ng},${nb},${alpha})`;
+      ctx.fillStyle = n === this.hover ? '#ffffff' : rgb(partRgb(n.instrument), alpha);
       ctx.beginPath();
       const [x, y, w, h] = this.box(a0 + 0.5, b + 1, len, kh - 2);
       ctx.roundRect(x, y, w, h, Math.min(3, w / 2, h / 2));
@@ -396,6 +449,10 @@ export class PianoRoll {
     }
     ctx.textAlign = 'left';
 
+    ctx.restore();
+
+    if (this.showDrums) this.drawDrumRows(tStart, tEnd, step);
+
     // --- heads
     if (this.recordTime !== null) {
       ctx.fillStyle = C.recordHead;
@@ -405,7 +462,7 @@ export class PianoRoll {
       ctx.fillStyle = C.playhead;
       this.fill(this.timeA(this.playhead) - 1, ruler, 2, B);
     }
-    ctx.restore();
+
 
     // --- ruler
     ctx.fillStyle = C.ruler;
@@ -449,15 +506,17 @@ export class PianoRoll {
     const { ctx, B, ruler } = this;
     const kh = this.keyH;
     const active = this.livePitches
-      ? new Set(this.livePitches)
+      ? new Map(this.livePitches)
       : headT !== null
         ? this.activeAt(headT)
-        : new Set<number>();
-    if (this.pressedKey !== null) active.add(this.pressedKey);
+        : new Map<number, Instrument>();
+    if (this.hidden.size) for (const [p, inst] of active) if (this.hidden.has(inst)) active.delete(p);
+    if (this.pressedKey !== null) active.set(this.pressedKey, 'piano');
+    const top = this.top;
 
     ctx.save();
     ctx.beginPath();
-    ctx.rect(...this.box(0, ruler, KEY_LEN, B - ruler));
+    ctx.rect(...this.box(0, top, KEY_LEN, B - top));
     ctx.clip();
     ctx.fillStyle = C.keyWhite;
     this.fill(0, ruler, KEY_LEN, B);
@@ -473,9 +532,10 @@ export class PianoRoll {
       const after = this.vertical ? p + 1 : p - 1;
       const b0 = this.pitchB(p) - (before >= LOWEST && before <= HIGHEST && isBlackKey(before) ? kh / 2 : 0);
       const b1 = this.pitchB(p) + kh + (after >= LOWEST && after <= HIGHEST && isBlackKey(after) ? kh / 2 : 0);
-      if (b1 < ruler || b0 > B) continue;
-      if (active.has(p)) {
-        ctx.fillStyle = C.keyActive;
+      if (b1 < top || b0 > B) continue;
+      const inst = active.get(p);
+      if (inst) {
+        ctx.fillStyle = rgb(partRgb(inst));
         this.fill(0, b0, KEY_LEN, b1 - b0);
         // Shadow at the hinge end so the key reads as pushed down.
         ctx.fillStyle = 'rgba(0,0,0,0.22)';
@@ -491,9 +551,10 @@ export class PianoRoll {
     for (let p = HIGHEST; p >= LOWEST; p--) {
       if (!isBlackKey(p)) continue;
       const b = this.pitchB(p);
-      if (b + kh < ruler || b > B) continue;
-      const down = active.has(p);
-      ctx.fillStyle = down ? '#4fb85c' : C.keyBlack;
+      if (b + kh < top || b > B) continue;
+      const inst = active.get(p);
+      const down = inst !== undefined;
+      ctx.fillStyle = inst ? rgb(darker(partRgb(inst))) : C.keyBlack;
       ctx.beginPath();
       // Pressed black keys sink in, so they look slightly shorter.
       ctx.roundRect(...this.box(-3, b, KEY_LEN * 0.6 + (down ? 0 : 3), kh), 2);
@@ -501,14 +562,68 @@ export class PianoRoll {
     }
     // Border between keyboard and grid
     ctx.fillStyle = '#0c0f11';
-    this.fill(KEY_LEN - 1, ruler, 1, B);
+    this.fill(KEY_LEN - 1, top, 1, B);
     ctx.restore();
     ctx.textAlign = 'left';
+
+    if (this.showDrums) this.drawDrumLabels(headT);
+  }
+
+  /** Drum rows in the grid: fixed lanes for kick / snare / hi-hat with a mark per hit. */
+  private drawDrumRows(tStart: number, tEnd: number, step: number) {
+    const { ctx, A } = this;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(...this.box(KEY_LEN, this.ruler, A - KEY_LEN, this.top - this.ruler));
+    ctx.clip();
+    ctx.fillStyle = C.drumLane;
+    this.fill(KEY_LEN, this.ruler, A, this.top - this.ruler);
+    for (let t = Math.floor(tStart / step) * step; t <= tEnd; t += step) {
+      ctx.fillStyle = C.gridWeak;
+      this.fill(Math.round(this.timeA(t)) + 0.5, this.ruler, 1, this.top - this.ruler);
+    }
+    ctx.fillStyle = C.drumLaneLine;
+    DRUM_KINDS.forEach((_, i) => this.fill(KEY_LEN, this.drumB(i + 1) - 1, A, 1));
+    this.fill(KEY_LEN, this.top - 2, A, 2);
+
+    const col = partRgb('drums');
+    const len = Math.max(4, DRUM_HIT_LEN * this.pxPerSec);
+    for (const h of this.visibleDrums) {
+      const t = frameToSeconds(h.row);
+      if (t < tStart - DRUM_HIT_LEN || t > tEnd) continue;
+      const i = DRUM_KINDS.findIndex((d) => d.kind === h.kind);
+      ctx.fillStyle = rgb(col, 0.45 + 0.55 * h.velocity);
+      ctx.beginPath();
+      ctx.roundRect(...this.box(this.timeA(t), this.drumB(i) + 3, len, DRUM_ROW - 7), 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  /** Drum row labels where the keyboard is; they light up as each drum is hit. */
+  private drawDrumLabels(headT: number | null) {
+    const { ctx } = this;
+    const hit = this.liveDrums ?? (headT !== null ? this.drumsAt(headT) : new Set<DrumKind>());
+    ctx.save();
+    ctx.font = '600 10px ui-sans-serif, system-ui, sans-serif';
+    ctx.textBaseline = 'middle';
+    ctx.textAlign = 'center';
+    DRUM_KINDS.forEach((d, i) => {
+      const on = hit.has(d.kind) && !this.hidden.has('drums');
+      ctx.fillStyle = on ? rgb(partRgb('drums')) : '#2a3238';
+      this.fill(0, this.drumB(i), KEY_LEN - 1, DRUM_ROW - 1);
+      ctx.fillStyle = on ? C.noteText : '#aab4bb';
+      // Vertical mode has only a narrow column per drum, so use the initial.
+      const label = this.vertical ? d.short : d.label;
+      ctx.fillText(label, ...this.pt(KEY_LEN / 2, this.drumB(i) + DRUM_ROW / 2));
+    });
+    ctx.restore();
   }
 
   private drawTooltip(n: Note) {
     const { ctx } = this;
-    const text = `${noteName(n.pitch)}  ·  ${formatTime(frameToSeconds(n.start), true)}  ·  ${Math.round(
+    const part = PARTS.find((p) => p.id === n.instrument)!.label;
+    const text = `${noteName(n.pitch)}  ·  ${part}  ·  ${formatTime(frameToSeconds(n.start), true)}  ·  ${Math.round(
       (frameToSeconds(n.end) - frameToSeconds(n.start)) * 1000,
     )} ms`;
     ctx.font = '12px ui-sans-serif, system-ui, sans-serif';
@@ -517,7 +632,7 @@ export class PianoRoll {
     const th = 22;
     const [nx, ny, nw, nh] = this.box(this.timeA(frameToSeconds(n.start)), this.pitchB(n.pitch), 0, this.keyH);
     // Place above the note, or below it if there's no room.
-    const [minX, minY] = this.pt(KEY_LEN, this.ruler);
+    const [minX, minY] = this.pt(KEY_LEN, this.top);
     let x = Math.max(minX + 4, Math.min(nx + (this.vertical ? nw + 6 : 0), this.w - tw - 4));
     let y = this.vertical ? ny : ny - th - 4;
     if (y < minY + 2) y = ny + nh + 4;

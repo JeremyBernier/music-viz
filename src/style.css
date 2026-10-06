@@ -208,6 +208,56 @@ select {
 .settings .check span {
   font-weight: 500;
 }
+.settings .check.stacked {
+  display: grid;
+  gap: 4px;
+}
+.settings .check .row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.legend[hidden] {
+  display: none;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px 0 6px;
+  height: 18px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.chip::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--c);
+}
+.chip.absent {
+  opacity: 0.5;
+}
+.chip.off {
+  color: var(--dim);
+  text-decoration: line-through;
+}
+.chip.off::before {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--c);
+}
 input[type='range'] {
   width: 100%;
   accent-color: var(--accent);
@@ -265,6 +315,9 @@ input[type='range'] {
 }
 #status {
   color: var(--text);
+}
+.statusbar {
+  align-items: center;
 }
 .statusbar .hints {
   margin-left: auto;

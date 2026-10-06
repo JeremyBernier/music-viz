@@ -80,6 +80,14 @@
         <input id="melodia" type="checkbox" />
         <span>Recover notes without a clear attack</span>
       </label>
+      <label class="check stacked">
+        <span class="row"><input id="instruments" type="checkbox" /><span>Identify instruments</span></span>
+        <small>
+          Colours piano, bass, drums and vocals. While recording this is a rough guess. When you stop, an
+          AI model splits the audio into instruments for accurate colours. The model is a 172&nbsp;MB
+          download the first time.
+        </small>
+      </label>
       <button id="resetSettings" class="btn ghost small">Reset to defaults</button>
     </div>
 
@@ -94,6 +102,7 @@
     <footer class="statusbar">
       <span id="status">Loading note-detection model…</span>
       <span id="count"></span>
+      <span id="legend" class="legend" hidden></span>
       <span class="hints">
         Scroll to move · <kbd>⌘/Ctrl</kbd>+scroll zooms time · <kbd>Alt</kbd>+scroll zooms keys · Click a note to hear it ·
         Click the ruler to set the playhead

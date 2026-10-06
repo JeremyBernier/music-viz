@@ -5,12 +5,15 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc --noEmit && rm -rf dist && vite build && cp pages/_redirects dist/_redirects",
+    "preview": "vite preview --outDir dist",
+    "typecheck": "tsc --noEmit",
+    "deploy": "npm run build && npx wrangler pages deploy dist --project-name music-viz --branch main"
   },
   "dependencies": {
-    "@tensorflow/tfjs": "^4.22.0"
+    "@tensorflow/tfjs": "^4.22.0",
+    "demucs-web": "^1.0.2",
+    "onnxruntime-web": "1.22.0"
   },
   "devDependencies": {
     "typescript": "^7.0.2",

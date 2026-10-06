@@ -1,4 +1,5 @@
 import { MIDI_OFFSET, N_PITCHES, secondsToFrame } from './constants';
+import type { Instrument } from './instruments';
 import type { FrameStore } from './transcriber';
 
 export interface Note {
@@ -10,6 +11,7 @@ export interface Note {
   end: number;
   /** Mean model confidence while sounding, 0..1. Used as a velocity proxy. */
   amplitude: number;
+  instrument: Instrument;
 }
 
 export interface NoteParams {
@@ -46,6 +48,7 @@ export function extractNotes(
   to: number,
   params: NoteParams,
   exclude: Note[] = [],
+  instrument: Instrument = 'piano',
 ): Note[] {
   const P = N_PITCHES;
   const n = to - from;
@@ -121,7 +124,7 @@ export function extractNotes(
     i -= k;
     if (i - r0 <= minNoteLen) continue;
     for (let r = r0; r < i; r++) zero(r, c);
-    notes.push({ pitch: c + MIDI_OFFSET, start: from + r0, end: from + i, amplitude: meanAmp(r0, i, c) });
+    notes.push({ pitch: c + MIDI_OFFSET, start: from + r0, end: from + i, amplitude: meanAmp(r0, i, c), instrument });
   }
 
   if (params.melodiaTrick) {
@@ -157,7 +160,7 @@ export function extractNotes(
       const iStart = i + 1 + k;
 
       if (iEnd - iStart <= minNoteLen) continue;
-      notes.push({ pitch: c + MIDI_OFFSET, start: from + iStart, end: from + iEnd, amplitude: meanAmp(iStart, iEnd, c) });
+      notes.push({ pitch: c + MIDI_OFFSET, start: from + iStart, end: from + iEnd, amplitude: meanAmp(iStart, iEnd, c), instrument });
     }
   }
 
@@ -174,7 +177,10 @@ export class NoteTracker {
   private tentative: Note[] = [];
   private commitRow = 0;
 
-  constructor(public params: NoteParams) {}
+  constructor(
+    public params: NoteParams,
+    readonly instrument: Instrument = 'piano',
+  ) {}
 
   get notes(): Note[] {
     return this.tentative.length ? this.committed.concat(this.tentative) : this.committed;
@@ -191,7 +197,7 @@ export class NoteTracker {
     const CONTEXT = 20;
     const from = Math.max(0, this.commitRow - CONTEXT);
     const exclude = this.committed.filter((n) => n.end > from);
-    const found = extractNotes(store, from, N, this.params, exclude).filter((n) => n.start >= this.commitRow);
+    const found = extractNotes(store, from, N, this.params, exclude, this.instrument).filter((n) => n.start >= this.commitRow);
 
     if (final) {
       this.committed = this.committed.concat(found).sort((a, b) => a.start - b.start);

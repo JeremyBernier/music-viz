@@ -1,10 +1,14 @@
 import type { GraphModel } from '@tensorflow/tfjs';
 import { decodeFile, listInputs, startRecording, type Recorder } from './audio';
 import { frameToSeconds, SAMPLE_RATE } from './constants';
+import { DrumDetector } from './drums';
+import { PARTS, partRgb, type DrumHit, type DrumKind, type Instrument, type Part } from './instruments';
 import { notesToMidi } from './midi';
 import { DEFAULT_PARAMS, NoteTracker, type Note, type NoteParams } from './notes';
+import { classifyLive, mergeStemNotes } from './parts';
 import { formatTime, PianoRoll } from './pianoRoll';
 import { Player, type PlayMode } from './player';
+import { cancelSeparation, separateStems, type SeparationStatus, type Stem } from './separation';
 import { loadModel, StreamingTranscriber } from './transcriber';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -20,53 +24,95 @@ const playModeSel = $<HTMLSelectElement>('playMode');
 const fileInput = $<HTMLInputElement>('file');
 const emptyEl = $('empty');
 const settingsEl = $('settings');
+const legendEl = $('legend');
 
 const roll = new PianoRoll($<HTMLCanvasElement>('roll'));
 const player = new Player();
 
+/** One audio signal run through the note model. */
+interface Source {
+  transcriber: StreamingTranscriber;
+  tracker: NoteTracker;
+}
+
 let model: GraphModel | null = null;
-let transcriber: StreamingTranscriber | null = null;
 let recorder: Recorder | null = null;
 let recordingAudio: AudioBuffer | null = null;
 let busy = false; // finishing a recording or transcribing a file
-const tracker = new NoteTracker(loadParams());
+let params = loadParams();
+let instrumentsOn = loadFlag('instruments', true);
+
+/** The full mix: analysed live while recording, with rough instrument guesses. */
+let mix: Source | null = null;
+let mixDrums: DrumDetector | null = null;
+/** After separation: each stem transcribed on its own, for accurate instrument labels. */
+let stems: { sources: Source[]; drums: DrumHit[] } | null = null;
+let separating = false; // for the current session
+/** Bumped for every new recording / file so late results from an old one are dropped. */
+let session = 0;
 
 const setStatus = (s: string) => (statusEl.textContent = s);
 
+function currentNotes(): Note[] {
+  if (!mix) return [];
+  if (!instrumentsOn) return mix.tracker.notes;
+  if (stems) return mergeStemNotes(stems.sources.map((s) => s.tracker.notes));
+  return classifyLive(mix.tracker.notes, mixDrums?.hits ?? []);
+}
+
+function currentDrums(): DrumHit[] {
+  if (!instrumentsOn) return [];
+  return stems ? stems.drums : (mixDrums?.hits ?? []);
+}
+
 function refreshNotes() {
-  roll.notes = tracker.notes;
+  roll.notes = currentNotes();
+  roll.drums = currentDrums();
+  roll.showDrums = instrumentsOn;
   roll.invalidate();
   const n = roll.notes.length;
-  countEl.textContent = n ? `${n} note${n === 1 ? '' : 's'}` : '';
-  emptyEl.hidden = n > 0 || recorder !== null || busy;
+  const d = roll.drums.length;
+  countEl.textContent = [n ? `${n} note${n === 1 ? '' : 's'}` : '', d ? `${d} drum hit${d === 1 ? '' : 's'}` : '']
+    .filter(Boolean)
+    .join(' · ');
+  emptyEl.hidden = n + d > 0 || recorder !== null || busy;
+  renderLegend();
   updateButtons();
 }
 
 function updateButtons() {
-  const has = roll.notes.length > 0 || recordingAudio !== null;
+  const has = roll.notes.length > 0 || roll.drums.length > 0 || recordingAudio !== null;
   recordBtn.disabled = !model || busy;
   playBtn.disabled = recorder !== null || busy || !has;
-  exportBtn.disabled = recorder !== null || busy || roll.notes.length === 0;
+  exportBtn.disabled = recorder !== null || busy || roll.notes.length + roll.drums.length === 0;
   fileInput.disabled = recorder !== null || busy || !model;
 }
 
 /** Pitches still sounding at the newest analysed row (a note's end is its last loud row). */
-function soundingAt(notes: Note[], rows: number): Set<number> {
-  const s = new Set<number>();
-  for (const n of notes) if (n.end >= rows - 2) s.add(n.pitch);
-  return s;
+function soundingAt(notes: Note[], rows: number): Map<number, Instrument> {
+  const m = new Map<number, Instrument>();
+  for (const n of notes) if (n.end >= rows - 2) m.set(n.pitch, n.instrument);
+  return m;
 }
 
 function newSession() {
   player.stop();
-  transcriber = new StreamingTranscriber(model!, () => {
-    const rows = transcriber!.store.rows;
-    tracker.update(transcriber!.store);
+  session++;
+  cancelSeparation();
+  separating = false;
+  stems = null;
+  const transcriber = new StreamingTranscriber(model!, () => {
+    const rows = transcriber.store.rows;
+    mix!.tracker.update(transcriber.store);
     roll.analyzedTime = frameToSeconds(rows);
-    if (recorder) roll.livePitches = soundingAt(tracker.notes, rows);
     refreshNotes();
+    if (recorder) {
+      roll.livePitches = soundingAt(roll.notes, rows);
+      roll.liveDrums = new Set(roll.drums.filter((h) => h.row >= rows - 10).map((h) => h.kind));
+    }
   });
-  tracker.reset();
+  mix = { transcriber, tracker: new NoteTracker(params) };
+  mixDrums = instrumentsOn ? new DrumDetector(true) : null;
   recordingAudio = null;
   roll.playhead = null;
   roll.resetView();
@@ -83,7 +129,10 @@ async function toggleRecord() {
   try {
     recorder = await startRecording(
       deviceSel.value || undefined,
-      (samples) => transcriber!.push(samples),
+      (samples) => {
+        mix!.transcriber.push(samples);
+        mixDrums?.push(samples);
+      },
       (rms) => (levelEl.style.width = `${Math.min(100, Math.sqrt(rms) * 220)}%`),
     );
   } catch (err) {
@@ -95,12 +144,16 @@ async function toggleRecord() {
   roll.analyzedTime = 0;
   recordBtn.classList.add('recording');
   recordBtn.querySelector('.label')!.textContent = 'Stop';
-  setStatus('Recording… play something!');
+  setStatus(
+    instrumentsOn
+      ? 'Recording… Instrument colours are a rough guess until you stop.'
+      : 'Recording… play something!',
+  );
   refreshNotes();
 }
 
 async function stopRecording() {
-  if (!recorder || !transcriber) return;
+  if (!recorder || !mix) return;
   const rec = recorder;
   recorder = null;
   busy = true;
@@ -111,15 +164,118 @@ async function stopRecording() {
   updateButtons();
 
   recordingAudio = await rec.stop();
-  await transcriber.finish();
+  await mix.transcriber.finish();
+  mixDrums?.finish();
   // Final pass over the whole take so everything is decoded consistently.
-  tracker.recompute(transcriber.store);
+  mix.tracker.recompute(mix.transcriber.store);
   roll.recordTime = null;
   roll.livePitches = null;
+  roll.liveDrums = null;
   roll.playhead = 0;
   busy = false;
   refreshNotes();
   setStatus(`Recorded ${formatTime(recordingAudio.duration, true)}. Press Space to play it back.`);
+  if (instrumentsOn) void separate();
+}
+
+// ---------------------------------------------------------------- instrument separation
+
+function describe(s: SeparationStatus): string {
+  switch (s.phase) {
+    case 'download':
+      return `Downloading the instrument model (first time only)… ${Math.round(s.loaded / 1e6)} of ${Math.round(s.total / 1e6)} MB`;
+    case 'loading':
+      return 'Loading the instrument model…';
+    case 'separating':
+      return `Separating instruments… ${Math.round(s.progress * 100)}%${s.backend === 'wasm' ? ' (no GPU available, so this is slow)' : ''}`;
+    case 'transcribing':
+      return 'Transcribing each instrument…';
+  }
+}
+
+const rms = (x: Float32Array) => {
+  let s = 0;
+  for (let i = 0; i < x.length; i++) s += x[i] * x[i];
+  return Math.sqrt(s / Math.max(1, x.length));
+};
+
+/** Which stem feeds which instrument. Demucs' "other" stem is where piano ends up. */
+const STEM_OF: Record<Instrument, Stem> = { piano: 'other', bass: 'bass', vocals: 'vocals' };
+
+/**
+ * Split the take into stems with Demucs, then transcribe each stem separately. Runs in the
+ * background; the rough live result stays on screen until this finishes.
+ */
+async function separate() {
+  const audio = recordingAudio;
+  if (!audio || !model || separating) return;
+  const id = session;
+  separating = true;
+  try {
+    const audioStems = await separateStems(audio, (s) => {
+      if (id === session) setStatus(describe(s));
+    });
+    if (id !== session) return;
+    // Separation always leaks a little into every stem; skip stems that are essentially silent.
+    const levels = Object.fromEntries(Object.entries(audioStems).map(([k, v]) => [k, rms(v)])) as Record<Stem, number>;
+    const total = Object.values(levels).reduce((a, b) => a + b, 0);
+    const audible = (stem: Stem) => levels[stem] > 0.04 * total;
+
+    const sources: Source[] = [];
+    for (const inst of ['piano', 'bass', 'vocals'] as Instrument[]) {
+      if (!audible(STEM_OF[inst])) continue;
+      const transcriber = new StreamingTranscriber(model, () => {});
+      transcriber.push(audioStems[STEM_OF[inst]]);
+      await transcriber.finish();
+      const tracker = new NoteTracker(params, inst);
+      tracker.recompute(transcriber.store);
+      sources.push({ transcriber, tracker });
+    }
+    let drums: DrumHit[] = [];
+    if (audible('drums')) {
+      const det = new DrumDetector(false);
+      det.push(audioStems.drums);
+      det.finish();
+      drums = det.hits;
+    }
+    if (id !== session) return;
+    stems = { sources, drums };
+    refreshNotes();
+    setStatus('Instruments separated. Click a colour in the legend to show or hide it.');
+  } catch (err) {
+    if (id === session) {
+      setStatus(`Couldn't separate instruments (${(err as Error).message}). Showing the rough guess instead.`);
+    }
+  } finally {
+    if (id === session) separating = false;
+  }
+}
+
+// ---------------------------------------------------------------- legend
+
+function renderLegend() {
+  legendEl.hidden = !instrumentsOn;
+  if (!instrumentsOn) return;
+  const present = new Set<Part>(roll.notes.map((n) => n.instrument));
+  if (roll.drums.length) present.add('drums');
+  legendEl.replaceChildren(
+    ...PARTS.map((p) => {
+      const b = document.createElement('button');
+      b.className = 'chip';
+      b.classList.toggle('off', roll.hidden.has(p.id));
+      b.classList.toggle('absent', !present.has(p.id));
+      b.title = roll.hidden.has(p.id) ? `Show ${p.label}` : `Hide ${p.label}`;
+      b.setAttribute('aria-pressed', String(!roll.hidden.has(p.id)));
+      b.style.setProperty('--c', `rgb(${partRgb(p.id).join(',')})`);
+      b.textContent = p.label;
+      b.addEventListener('click', () => {
+        if (roll.hidden.has(p.id)) roll.hidden.delete(p.id);
+        else roll.hidden.add(p.id);
+        refreshNotes();
+      });
+      return b;
+    }),
+  );
 }
 
 // ---------------------------------------------------------------- files
@@ -130,19 +286,23 @@ async function openFile(file: File) {
   busy = true;
   refreshNotes();
   setStatus(`Decoding ${file.name}…`);
+  let ok = false;
   try {
     const { original, mono22k } = await decodeFile(file);
     recordingAudio = original;
-    const t = transcriber!;
+    const t = mix!.transcriber;
     const total = Math.ceil(mono22k.length / 256);
     const onProgress = () => setStatus(`Transcribing ${file.name}… ${Math.min(99, Math.round((100 * t.store.rows) / total))}%`);
     const timer = setInterval(onProgress, 200);
     t.push(mono22k);
+    mixDrums?.push(mono22k);
+    mixDrums?.finish();
     await t.finish();
     clearInterval(timer);
-    tracker.recompute(t.store);
-    roll.frameNotes(tracker.notes);
+    mix!.tracker.recompute(t.store);
+    roll.frameNotes(mix!.tracker.notes);
     setStatus(`Transcribed ${file.name} (${formatTime(original.duration, true)}).`);
+    ok = true;
   } catch (err) {
     setStatus(`Could not read ${file.name}: ${(err as Error).message}`);
   } finally {
@@ -150,9 +310,13 @@ async function openFile(file: File) {
     roll.playhead = 0;
     refreshNotes();
   }
+  if (ok && instrumentsOn) void separate();
 }
 
 // ---------------------------------------------------------------- playback
+
+const audibleNotes = () => roll.notes.filter((n) => !roll.hidden.has(n.instrument));
+const audibleDrums = () => (roll.hidden.has('drums') ? [] : roll.drums);
 
 function togglePlay() {
   if (recorder || busy) return;
@@ -165,7 +329,7 @@ function togglePlay() {
   let from = roll.playhead ?? 0;
   const end = roll.notes.reduce((m, n) => Math.max(m, frameToSeconds(n.end)), recordingAudio?.duration ?? 0);
   if (from >= end - 0.05) from = 0;
-  player.play(roll.notes, from, playModeSel.value as PlayMode, recordingAudio);
+  player.play(audibleNotes(), audibleDrums(), from, playModeSel.value as PlayMode, recordingAudio);
   playBtn.classList.add('active');
   roll.follow = true;
 }
@@ -176,8 +340,10 @@ player.onEnded = () => {
   roll.invalidate();
 };
 
-roll.onNoteClick = (n) => player.preview(n.pitch, Math.min(1.5, frameToSeconds(n.end - n.start)), n.amplitude);
+roll.onNoteClick = (n) =>
+  player.preview(n.pitch, Math.min(1.5, frameToSeconds(n.end - n.start)), n.amplitude, n.instrument);
 roll.onKeyPress = (p) => player.preview(p);
+roll.onDrumPress = (k: DrumKind) => player.previewDrum(k);
 roll.onSeek = (t) => {
   if (recorder) return;
   const wasPlaying = player.playing;
@@ -185,7 +351,7 @@ roll.onSeek = (t) => {
   roll.playhead = t;
   roll.invalidate();
   if (wasPlaying) {
-    player.play(roll.notes, t, playModeSel.value as PlayMode, recordingAudio);
+    player.play(audibleNotes(), audibleDrums(), t, playModeSel.value as PlayMode, recordingAudio);
   }
 };
 
@@ -193,8 +359,8 @@ roll.onSeek = (t) => {
 
 function frame() {
   player.tick();
-  if (recorder && transcriber) {
-    const t = transcriber.receivedSamples / SAMPLE_RATE;
+  if (recorder && mix) {
+    const t = mix.transcriber.receivedSamples / SAMPLE_RATE;
     roll.recordTime = t;
     clock.textContent = formatTime(t, true);
     if (roll.follow) roll.reveal(t);
@@ -217,6 +383,16 @@ const onsetIn = $<HTMLInputElement>('onset');
 const frameIn = $<HTMLInputElement>('frame');
 const minLenIn = $<HTMLInputElement>('minLen');
 const melodiaIn = $<HTMLInputElement>('melodia');
+const instrumentsIn = $<HTMLInputElement>('instruments');
+
+function loadFlag(key: string, fallback: boolean) {
+  try {
+    const v = localStorage.getItem(key);
+    return v === null ? fallback : v === '1';
+  } catch {
+    return fallback;
+  }
+}
 
 function loadParams(): NoteParams {
   try {
@@ -239,7 +415,9 @@ function showParams(p: NoteParams) {
 
 let recomputeTimer = 0;
 function applyParams(p: NoteParams) {
-  tracker.params = p;
+  params = p;
+  const sources = [mix, ...(stems?.sources ?? [])].filter((x): x is Source => x !== null);
+  for (const src of sources) src.tracker.params = p;
   showParams(p);
   try {
     localStorage.setItem('noteParams', JSON.stringify(p));
@@ -247,10 +425,10 @@ function applyParams(p: NoteParams) {
     /* storage unavailable */
   }
   // Re-decode the existing take with the new settings (the raw model output is kept).
-  if (transcriber && !recorder && !busy) {
+  if (mix && !recorder && !busy) {
     clearTimeout(recomputeTimer);
     recomputeTimer = window.setTimeout(() => {
-      tracker.recompute(transcriber!.store);
+      for (const src of sources) src.tracker.recompute(src.transcriber.store);
       refreshNotes();
     }, 60);
   }
@@ -265,7 +443,19 @@ function readParams(): NoteParams {
   };
 }
 
-showParams(tracker.params);
+showParams(params);
+instrumentsIn.checked = instrumentsOn;
+instrumentsIn.addEventListener('change', () => {
+  instrumentsOn = instrumentsIn.checked;
+  try {
+    localStorage.setItem('instruments', instrumentsOn ? '1' : '0');
+  } catch {
+    /* storage unavailable */
+  }
+  refreshNotes();
+  // Turned on after a take was made without it: separate that take now.
+  if (instrumentsOn && !stems && !recorder && !busy) void separate();
+});
 for (const el of [onsetIn, frameIn, minLenIn, melodiaIn]) el.addEventListener('input', () => applyParams(readParams()));
 $('resetSettings').addEventListener('click', () => applyParams({ ...DEFAULT_PARAMS }));
 $('settingsBtn').addEventListener('click', (e) => {
@@ -332,7 +522,7 @@ fileInput.addEventListener('change', () => {
   if (f) void openFile(f);
 });
 exportBtn.addEventListener('click', () => {
-  const blob = new Blob([notesToMidi(roll.notes) as BlobPart], { type: 'audio/midi' });
+  const blob = new Blob([notesToMidi(roll.notes, roll.drums) as BlobPart], { type: 'audio/midi' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
   a.download = `transcription-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.mid`;
