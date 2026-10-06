@@ -530,9 +530,20 @@ exportBtn.addEventListener('click', () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
 
+// ---------------------------------------------------------------- about
+const aboutEl = $<HTMLDialogElement>('about');
+$('aboutBtn').addEventListener('click', () => aboutEl.showModal());
+$('aboutClose').addEventListener('click', () => aboutEl.close());
+// A click on the backdrop lands on the dialog element, outside its box.
+aboutEl.addEventListener('click', (e) => {
+  const r = aboutEl.getBoundingClientRect();
+  const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
+  if (e.target === aboutEl && !inside) aboutEl.close();
+});
+
 window.addEventListener('keydown', (e) => {
   const tag = (e.target as HTMLElement).tagName;
-  if (tag === 'INPUT' || tag === 'SELECT' || e.metaKey || e.ctrlKey) return;
+  if (tag === 'INPUT' || tag === 'SELECT' || e.metaKey || e.ctrlKey || aboutEl.open) return;
   if (e.code === 'Space') {
     e.preventDefault();
     togglePlay();

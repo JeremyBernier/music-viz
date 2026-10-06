@@ -58,6 +58,10 @@
           <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M7.25 2h1.5v6.4l2.2-2.2 1.06 1.06L8 11.28 3.99 7.26 5.05 6.2l2.2 2.2zM3 12.5h10V14H3z"/></svg>
           <span class="label">MIDI</span>
         </button>
+        <button id="aboutBtn" class="btn ghost" aria-label="About" title="About">
+          <svg viewBox="0 0 16 16" width="14" height="14"><path fill="currentColor" d="M8 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13m0 1.5a5 5 0 1 0 0 10A5 5 0 0 0 8 3m-.75 4h1.5v4.5h-1.5zm0-2.5h1.5V6h-1.5z"/></svg>
+          <span class="label">About</span>
+        </button>
       </div>
     </header>
 
@@ -90,6 +94,21 @@
       </label>
       <button id="resetSettings" class="btn ghost small">Reset to defaults</button>
     </div>
+
+    <dialog id="about" class="about" aria-labelledby="aboutTitle">
+      <button id="aboutClose" class="btn ghost small close" aria-label="Close">✕</button>
+      <img src="/jeremy-bernier.jpg" alt="Jeremy Bernier" width="96" height="96" />
+      <h2 id="aboutTitle">Piano Roll <span>Transcriber</span></h2>
+      <p>Made by <strong>Jeremy Bernier</strong></p>
+      <nav>
+        <a href="https://jbernier.com" target="_blank" rel="noopener">Website</a>
+        <a href="https://x.com/jeremybernier" target="_blank" rel="noopener">X</a>
+        <a href="https://www.linkedin.com/in/jeremysbernier" target="_blank" rel="noopener">LinkedIn</a>
+      </nav>
+      <p class="dim">
+        Source code on <a href="https://github.com/JeremyBernier/music-viz" target="_blank" rel="noopener">GitHub</a>
+      </p>
+    </dialog>
 
     <main class="stage">
       <canvas id="roll"></canvas>

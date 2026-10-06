@@ -218,6 +218,70 @@ select {
   gap: 8px;
 }
 
+.about {
+  width: min(320px, calc(100vw - 32px));
+  padding: 28px 24px 22px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5);
+}
+.about::backdrop {
+  background: rgba(0, 0, 0, 0.55);
+}
+.about .close {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 0 8px;
+  border-color: transparent;
+}
+.about img {
+  display: block;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+}
+.about h2 {
+  margin: 0 0 6px;
+  font-size: 16px;
+}
+.about h2 span {
+  color: var(--accent);
+}
+.about p {
+  margin: 0;
+  font-size: 14px;
+}
+.about nav {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin: 16px 0;
+}
+.about nav a {
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel-2);
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+.about nav a:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.about .dim {
+  color: var(--dim);
+  font-size: 13px;
+}
+.about .dim a {
+  color: var(--accent);
+}
+
 .legend {
   display: flex;
   flex-wrap: wrap;
@@ -324,7 +388,7 @@ input[type='range'] {
 }
 
 @media (max-width: 1440px) {
-  .btn.ghost:not(#orientation) .label {
+  .btn.ghost:not(#orientation, #aboutBtn) .label {
     display: none;
   }
 }
